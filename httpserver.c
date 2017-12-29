@@ -38,7 +38,7 @@
 
 #include<arpa/inet.h>
 
-
+	// data for MAC address of server device
  //b8:27:eb:08:8d:65 
  #define DESTMAC0	0xb8
  #define DESTMAC1	0x27
@@ -46,10 +46,13 @@
  #define DESTMAC3	0x08
  #define DESTMAC4	0x8d
  #define DESTMAC5	0x65
+ struct sockaddr_ll sadr_ll;
 
+// data from IPv6
 struct in6_addr ip6_src;	/* source address */
 struct in6_addr ip6_dst;	/* destination address */
 
+// funs
 void service_error(char *message);
 void process_packet(unsigned char* buffer, int size, int dsc);
 void print_ethernet_header(unsigned char* buffer, int size);
@@ -59,24 +62,30 @@ void print_tcp_packet(unsigned char* buffer , int size);
 int create_socket();
 void send_icmp6_answer(unsigned char* buffer, int socket_desc);
 uint16_t checksum (void * buffer, int bytes);
+void print_packet_in_hex(int start, int end, char* packet);
 
+// data received from socket about source...
 struct sockaddr destination;
 int addr_size;
 
+//begin the suffering
 int main (int argc, char **argv)
 {
 	printf("Starting server\n");
+	
+	printf("%d\n", sizeof(struct icmp6_hdr));
 
 	int socket_desc_rcv = create_socket();
 	int socket_desc_send = create_socket();
 	unsigned char *buffer;
 
-
 	printf("Starting receiving...\n");
+	
 	int bytes;
 	//data saved after receiving
 	buffer = (unsigned char *) malloc (1000* sizeof (unsigned char));
 	memset(buffer,0, 1000);
+	
 	//RECEIVING
 	while(1){
 		if ((bytes = recvfrom (socket_desc_rcv, (void*)buffer, 1000, 0, &destination, &addr_size)) < 0)  {
@@ -89,7 +98,6 @@ int main (int argc, char **argv)
 		}
 	}
 	
-
 	free(buffer);
 	return (EXIT_SUCCESS);
 }
@@ -109,7 +117,6 @@ int create_socket(){
 	// create raw socket for basic packets and sniffing ethernet packets
 	if (((socket_desc = socket (AF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) < 0)) 
 		service_error("Error receiving listening socket desc: ");
-		
 		
 	// binding socket to interface eth0
 	memset(&ifr, 0, sizeof(struct ifreq));
@@ -132,13 +139,10 @@ void process_packet(unsigned char* buffer, int size, int dsc)
 
     switch ((unsigned int)ip6h->ip6_ctlun.ip6_un1.ip6_un1_nxt) //Check the Protocol and do accordingly...
     {
-        case 58:  //ICMP Protocol
-			printf("%s\n", buffer);
+        case 58:  //ICMPv6 Protocol
             print_icmp6_packet( buffer , size);
-            //exit(1);
             send_icmp6_answer(buffer, dsc);
             break;
-
         case 6:  //TCP Protocol
             //print_tcp_packet(buffer , size);
             break;
@@ -151,10 +155,6 @@ void process_packet(unsigned char* buffer, int size, int dsc)
 
 void send_icmp6_answer(unsigned char* buffer, int socket_desc){
 	
-		int de;
-		if (((de= socket (AF_PACKET, SOCK_RAW, IPPROTO_RAW)) < 0)) 
-		service_error("Error receiving listening socket desc: ");
-	
 	struct ethhdr *eth = (struct ethhdr *)buffer;
 	struct ip6_hdr *ip6h = (struct ip6_hdr *)(buffer + sizeof(struct ethhdr));
 	struct icmp6_hdr *icmph6 = (struct icmp6_hdr *)(buffer + 40 + sizeof(struct ethhdr));
@@ -165,7 +165,6 @@ void send_icmp6_answer(unsigned char* buffer, int socket_desc){
 			service_error("error indexing");
 	}
 
-	struct sockaddr_ll sadr_ll;
 	sadr_ll.sll_ifindex = ifreq_i.ifr_ifindex; // index of interface
 	sadr_ll.sll_halen = ETH_ALEN; // length of destination mac address
 	sadr_ll.sll_addr[0] = DESTMAC0;
@@ -181,15 +180,14 @@ void send_icmp6_answer(unsigned char* buffer, int socket_desc){
 	
 	struct ethhdr *eth_send = malloc(sizeof(struct ethhdr));
 	struct ip6_hdr *ip6h_send = malloc(sizeof(struct ip6_hdr));
-	struct icmp6_hdr *icmph6_send = malloc(sizeof(struct icmp6_hdr));
-
 	
+	struct nd_neighbor_advert *na = malloc(sizeof(struct nd_neighbor_advert));
+
 	memcpy(eth_send->h_dest, eth->h_source, ETH_ALEN);
 	memcpy(eth_send->h_source, sadr_ll.sll_addr, ETH_ALEN);
 	eth_send->h_proto = htons(ETH_P_IPV6);
 	
-	//memcpy(packet, eth, sizeof(struct ethhdr));
-	
+	int a = 24;
 	memcpy(&ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_flow, &ip6h->ip6_ctlun.ip6_un1.ip6_un1_flow, sizeof(uint32_t));
 	memcpy(&ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_plen, &ip6h->ip6_ctlun.ip6_un1.ip6_un1_plen, sizeof(uint16_t));
 	memcpy(&ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_nxt, &ip6h->ip6_ctlun.ip6_un1.ip6_un1_nxt, sizeof(uint8_t));
@@ -199,72 +197,34 @@ void send_icmp6_answer(unsigned char* buffer, int socket_desc){
 	memcpy(&ip6h_send->ip6_dst, &ip6h->ip6_src, sizeof(struct in6_addr));
 	memcpy(&ip6h_send->ip6_src, &ip6h->ip6_dst, sizeof(struct in6_addr));
 	inet_pton(AF_INET6, "fe80::b0cc:7ba1:3f07:4b14", &ip6h_send->ip6_src);
+	inet_pton(AF_INET6, "fe80::b0cc:7ba1:3f07:4b14", &na->nd_na_target);
 	
-	icmph6_send->icmp6_type = 136; // advestisement neghtbour
-	icmph6_send->icmp6_code = 0; 
+	na->nd_na_hdr.icmp6_type = 136; // advestisement neghtbor
+	na->nd_na_hdr.icmp6_code = 0; 
 
-	//unsigned char pseudo_packet[72];
-	//pseudo_packet[0] = ip6h_send->ip6_src
-	//u//nsigned short data[] = {0x8800, 0x0000, 0x6000, 0x0000, 0xfe80, 0x0000, 0x0000, 0x0000, 0xb96b, 0x982f, 0x447a, 0x6a80, 0x0201, 0x6057, 0x187d, 0x7fad};
-	icmph6_send->icmp6_cksum = htons(0x6666);
-	//memcpy(eth_send->h_dest, eth->h_source, ETH_ALEN);
+	na->nd_na_hdr.icmp6_cksum = htons(0xf432);
+	na->nd_na_hdr.icmp6_dataun.icmp6_un_data8[0] = 0x06; // for O ans S flags
+
 	
 	memcpy(packet, eth_send, sizeof(struct ethhdr));
 	memcpy(packet+sizeof(struct ethhdr), ip6h_send, sizeof(struct ip6_hdr));
-	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr), icmph6_send, sizeof(struct icmp6_hdr));
+	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr), na, sizeof(struct nd_neighbor_advert));
 	
+	int target_link_layer_address = 0x02;
+	int length = 0x01;
+	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct nd_neighbor_advert) , &target_link_layer_address, 1);
+	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct nd_neighbor_advert) + 1, &length, 1);
+	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct nd_neighbor_advert) + 2, sadr_ll.sll_addr, 6);
 	
-	
-	/*
-38	struct icmp6_hdr
-39	  {
-40	    uint8_t     icmp6_type;   /* type fiel
-41	    uint8_t     icmp6_code;   /* code field 
-42	    uint16_t    icmp6_cksum;  /* checksum field 
-43	    union
-44	      {
-45	        uint32_t  icmp6_un_data32[1]; /* type-specific field 
-46	        uint16_t  icmp6_un_data16[2]; /* type-specific field 
-47	        uint8_t   icmp6_un_data8[4];  /* type-specific field 
-48	      } icmp6_dataun;
-49	  };*/
-
-	int dest_port = 2455;
-	struct sockaddr_in6 dest_addr; //set up dest address info
-
-
-	dest_addr.sin6_family = AF_INET6;
-	dest_addr.sin6_port = 0;
-	dest_addr.sin6_scope_id = 0x20;
-	inet_pton (AF_INET6, "fe80::b0cc:7ba1:3f07:4b14",  &dest_addr.sin6_addr);
 	int bytes;
 	
-
-printf("\n");
-int i;
-
-for (i = 0 & ~15; i < 88; i++)
-{
-    if  ((i & 15) == 0) 
-       printf("%04x ",i);
-    printf((i<0)?"   ":"%02x%c",(unsigned char)packet[i],((i+1)&15)?' ':'\n');
-}
-if ((i & 15) != 0)
-    printf("\n");
-		
-			
-	if ((bytes = sendto(de, packet, 88, 0, (const struct sockaddr*)&sadr_ll,sizeof(struct sockaddr_ll))) < 0)
-    {
-		service_error("sendto failed");
-    }
-		 printf("%d\n", bytes);
-		    exit(1);
-	
-	if (bytes = sendto(socket_desc, packet, 40+32, 0, (const struct sockaddr*)&sadr_ll,sizeof(struct sockaddr_ll)) < 0)
+	if (bytes = sendto(socket_desc, packet,  sizeof(struct ethhdr) + sizeof(struct ip6_hdr) + sizeof(struct nd_neighbor_advert) + 8, 0, (const struct sockaddr*)&sadr_ll,sizeof(struct sockaddr_ll)) < 0)
     {
 		service_error("sendto failed");
     }
    
+   	 printf("%d\n", bytes);
+		    exit(1);
 
 }
 
@@ -293,6 +253,22 @@ checksum (void * buffer, int bytes) {
    return (uint16_t) total;
 }
 
+void print_packet_in_hex(int start, int end, char* packet){
+	
+	printf("\n");
+	int i = start;
+
+	for (i = 0 & ~15; i < end; i++)
+	{
+		if ((i & 15) == 0) 
+			printf("%04x ",i);
+		printf((i<0)?"   ":"%02x%c",(unsigned char)packet[i],((i+1)&15)?' ':'\n');
+	}
+	if ((i & 15) != 0)
+    printf("\n");
+    
+}
+
 
 void print_ethernet_header(unsigned char* buffer, int size)
 {
@@ -303,6 +279,7 @@ void print_ethernet_header(unsigned char* buffer, int size)
     printf("   |-Destination Address : %.2X-%.2X-%.2X-%.2X-%.2X-%.2X \n", eth->h_dest[0] , eth->h_dest[1] , eth->h_dest[2] , eth->h_dest[3] , eth->h_dest[4] , eth->h_dest[5] );
     printf("   |-Source Address      : %.2X-%.2X-%.2X-%.2X-%.2X-%.2X \n", eth->h_source[0] , eth->h_source[1] , eth->h_source[2] , eth->h_source[3] , eth->h_source[4] , eth->h_source[5] );
     printf("   |-Protocol            : 0x%x \n", htons(eth->h_proto));
+    
 }
 
 void print_ip6_header(unsigned char* buffer, int size)
@@ -332,11 +309,12 @@ void print_ip6_header(unsigned char* buffer, int size)
 	
     printf("IPv6 Header\n");
     printf("   |-Version,class,flow: %u\n", (unsigned int)(ip6h->ip6_ctlun.ip6_un1.ip6_un1_flow));
-    printf("   |-Payload length    : %u\n",(unsigned int)(ip6h->ip6_ctlun.ip6_un1.ip6_un1_plen));
+    printf("   |-Payload length    : %d\n", (unsigned int)(ip6h->ip6_ctlun.ip6_un1.ip6_un1_plen));
     printf("   |-Next header       : %u\n", (unsigned int)(ip6h->ip6_ctlun.ip6_un1.ip6_un1_nxt));
-    printf("   |-Hop limit         : %u\n",(unsigned int)ip6h->ip6_ctlun.ip6_un1.ip6_un1_hlim);
-    printf("   |-Source IP         : %s\n",source);
-    printf("   |-Destination IP    : %s\n",destination);
+    printf("   |-Hop limit         : %u\n", (unsigned int) ip6h->ip6_ctlun.ip6_un1.ip6_un1_hlim);
+    printf("   |-Source IP         : %s\n", source);
+    printf("   |-Destination IP    : %s\n", destination);
+    
 }
 
 void print_icmp6_packet(unsigned char* buffer , int size)
@@ -355,34 +333,14 @@ void print_icmp6_packet(unsigned char* buffer , int size)
     print_ip6_header(buffer , size);
        
     printf("\n");
-         
     printf("ICMP Header\n");
     printf("   |-Type : %d",(unsigned int)(icmph6->icmp6_type));
-             
-    /*if((unsigned int)(icmph->type) == 11)
-    {
-        fprintf(logfile , "  (TTL Expired)\n");
-    }
-    else if((unsigned int)(icmph->type) == ICMP_ECHOREPLY)
-    {
-        fprintf(logfile , "  (ICMP Echo Reply)\n");
-    }*/
-     
     printf("   |-Code : %d\n",(unsigned int)(icmph6->icmp6_code));
     printf("   |-Checksum : 0x%x\n",ntohs(icmph6->icmp6_cksum));
-    //fprintf(logfile , "   |-ID       : %d\n",ntohs(icmph->id));
-    //fprintf(logfile , "   |-Sequence : %d\n",ntohs(icmph->sequence));
+	printf("   |-Some data : 0x%x\n",(unsigned int)(icmph6->icmp6_dataun.icmp6_un_data32));
     printf("\n");
- 
-    //fprintf(logfile , "IP Header\n");
-    //PrintData(Buffer,iphdrlen);
-         
-    //fprintf(logfile , "Data Payload\n");    
-     
-    //Move the pointer ahead and reduce the size of string
-    //PrintData(Buffer + header_size , (Size - header_size) );
-     
     printf("\n###########################################################");
+    
 }
 
 void print_tcp_packet(unsigned char* buffer, int size)
