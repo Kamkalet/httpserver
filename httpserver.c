@@ -6,11 +6,10 @@
 #include<string.h>    //s
  
 #include <netinet/icmp6.h> //Pro
-#include<netinet/udp.h>   //Pr
+#include <netinet/udp.h>   //Pr
 #include<netinet/tcp.h>  
 #include<netinet/ip6.h>    
 #include<netinet/if_ether.h>  //For ETH_P_IP
-#include<net/ethernet.h>  
 #include<sys/socket.h>
 #include<arpa/inet.h>
 #include<sys/ioctl.h>
@@ -20,6 +19,33 @@
 #include <net/if.h>
 #include <inttypes.h>
 
+#include<stdio.h>
+#include<string.h>
+#include<malloc.h>
+#include<errno.h>
+
+#include<sys/socket.h>
+#include<sys/types.h>
+#include<sys/ioctl.h>
+
+#include<net/if.h>
+#include<netinet/in.h>
+#include<netinet/ip.h>
+#include<netinet/if_ether.h>
+#include<netinet/udp.h>
+
+#include<linux/if_packet.h>
+
+#include<arpa/inet.h>
+
+
+ //b8:27:eb:08:8d:65 
+ #define DESTMAC0	0xb8
+ #define DESTMAC1	0x27
+ #define DESTMAC2	0xeb
+ #define DESTMAC3	0x08
+ #define DESTMAC4	0x8d
+ #define DESTMAC5	0x65
 
 struct in6_addr ip6_src;	/* source address */
 struct in6_addr ip6_dst;	/* destination address */
@@ -31,7 +57,11 @@ void print_ip6_header(unsigned char* buffer, int size);
 void print_icmp6_packet(unsigned char* buffer , int size);
 void print_tcp_packet(unsigned char* buffer , int size);
 int create_socket();
-void send_icmp6_answer(buffer);
+void send_icmp6_answer(unsigned char* buffer, int socket_desc);
+uint16_t checksum (void * buffer, int bytes);
+
+struct sockaddr destination;
+int addr_size;
 
 int main (int argc, char **argv)
 {
@@ -45,16 +75,17 @@ int main (int argc, char **argv)
 	printf("Starting receiving...\n");
 	int bytes;
 	//data saved after receiving
-	buffer = (unsigned char *) malloc (65536* sizeof (unsigned char));
+	buffer = (unsigned char *) malloc (1000* sizeof (unsigned char));
+	memset(buffer,0, 1000);
 	//RECEIVING
 	while(1){
-		if ((bytes = recvfrom (socket_desc_rcv, (void*)buffer, 65536, 0, NULL, (socklen_t*)sizeof (struct sockaddr_in6))) < 0)  {
+		if ((bytes = recvfrom (socket_desc_rcv, (void*)buffer, 1000, 0, &destination, &addr_size)) < 0)  {
 			service_error("recvfrom() failed ");
 		}else{
-			//printf("succes\n");
-			//printf("Number of bytes: %d", bytes);
-			//printf("\n");
+
+			printf("%x", buffer);
 			process_packet(buffer, bytes, socket_desc_send);
+		
 		}
 	}
 	
@@ -79,7 +110,8 @@ int create_socket(){
 	if (((socket_desc = socket (AF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) < 0)) 
 		service_error("Error receiving listening socket desc: ");
 		
-	// binding socket to interface etc0
+		
+	// binding socket to interface eth0
 	memset(&ifr, 0, sizeof(struct ifreq));
 	snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "eth0");
 	ioctl(socket_desc, SIOCGIFINDEX, &ifr);
@@ -96,20 +128,19 @@ int create_socket(){
 void process_packet(unsigned char* buffer, int size, int dsc)
 {
 
-	//printf("%d",sizeof(struct ethhdr));
     struct ip6_hdr *ip6h = (struct ip6_hdr*)(buffer + sizeof(struct ethhdr));
-       
-	//printf("next header: %d\n",(unsigned int)ip6h->ip6_ctlun.ip6_un1.ip6_un1_nxt);
-	// check next header value
+
     switch ((unsigned int)ip6h->ip6_ctlun.ip6_un1.ip6_un1_nxt) //Check the Protocol and do accordingly...
     {
         case 58:  //ICMP Protocol
+			printf("%s\n", buffer);
             print_icmp6_packet( buffer , size);
-            send_icmp6_answer(buffer. dsc);
+            //exit(1);
+            send_icmp6_answer(buffer, dsc);
             break;
 
         case 6:  //TCP Protocol
-            print_tcp_packet(buffer , size);
+            //print_tcp_packet(buffer , size);
             break;
         default: 
             //print_icmp6_packet( buffer , size);
@@ -120,53 +151,148 @@ void process_packet(unsigned char* buffer, int size, int dsc)
 
 void send_icmp6_answer(unsigned char* buffer, int socket_desc){
 	
+		int de;
+		if (((de= socket (AF_PACKET, SOCK_RAW, IPPROTO_RAW)) < 0)) 
+		service_error("Error receiving listening socket desc: ");
+	
 	struct ethhdr *eth = (struct ethhdr *)buffer;
 	struct ip6_hdr *ip6h = (struct ip6_hdr *)(buffer + sizeof(struct ethhdr));
-	struct icmp6_hdr *icmph6 = (struct icmp6_hdr *)(buffer + ip6_hdrlen  + sizeof(struct ethhdr));
+	struct icmp6_hdr *icmph6 = (struct icmp6_hdr *)(buffer + 40 + sizeof(struct ethhdr));
+	
+	struct ifreq ifreq_i;
+	strncpy(ifreq_i.ifr_name, "eth0", IFNAMSIZ-1);
+	if((ioctl(socket_desc, SIOCGIFINDEX, &ifreq_i))<0){
+			service_error("error indexing");
+	}
+
+	struct sockaddr_ll sadr_ll;
+	sadr_ll.sll_ifindex = ifreq_i.ifr_ifindex; // index of interface
+	sadr_ll.sll_halen = ETH_ALEN; // length of destination mac address
+	sadr_ll.sll_addr[0] = DESTMAC0;
+	sadr_ll.sll_addr[1] = DESTMAC1;
+	sadr_ll.sll_addr[2] = DESTMAC2;
+	sadr_ll.sll_addr[3] = DESTMAC3;
+	sadr_ll.sll_addr[4] = DESTMAC4;
+	sadr_ll.sll_addr[5] = DESTMAC5;
 	
 	//packet to be sent
 	unsigned char packet[4096];
 	memset (packet, 0, 4096);
 	
-	struct ethhdr *eth_send = (struct ethhdr *)packet;
-	struct ip6_hdr *ip6h_send = (struct ip6_hdr *)(packet + sizeof(struct ethhdr));
-	struct icmp6_hdr *icmph6_send = (struct icmp6_hdr *)(packet + 40 + sizeof(struct ethhdr));
+	struct ethhdr *eth_send = malloc(sizeof(struct ethhdr));
+	struct ip6_hdr *ip6h_send = malloc(sizeof(struct ip6_hdr));
+	struct icmp6_hdr *icmph6_send = malloc(sizeof(struct icmp6_hdr));
+
 	
 	memcpy(eth_send->h_dest, eth->h_source, ETH_ALEN);
-	memcpy(eth_send->h_source, eth->h_dest, ETH_ALEN);
-	memcpy(eth_send->h_proto, eth->h_proto, sizeof __be16);
+	memcpy(eth_send->h_source, sadr_ll.sll_addr, ETH_ALEN);
+	eth_send->h_proto = htons(ETH_P_IPV6);
 	
-	memcpy(packet, eth, sizeof(struct ethhdr));
+	//memcpy(packet, eth, sizeof(struct ethhdr));
 	
-	memcpy(ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_flow, ip6h->ip6_ctlun.ip6_un1.ip6_un1_flow, sizeof(uint32_t));
-	memcpy(ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_plen, ip6h->ip6_ctlun.ip6_un1.ip6_un1_plen, sizeof(uint16_t));
-	memcpy(ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_nxt, ip6h->ip6_ctlun.ip6_un1.ip6_un1_nxt, sizeof(uint8_t));
-	memcpy(ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_hlim, ip6h->ip6_ctlun.ip6_un1.ip6_un1_hlim, sizeof(uint8_t));
-	memcpy(ip6h_send->ip6_ctlun.ip6_un2_vfc, ip6h->ip6_ctlun.ip6_un2_vfc, sizeof(uint8_t));
-	memcpy(ip6h_send->ip6src, ip6h->ip6_ctlun.ip6_un2_vfc, sizeof(uint8_t));
-	memcpy(ip6h_send->ip6_ctlun.ip6_dst, ip6h->ip6_ctlun.ip6_dst, sizeof(struct in6_addr));
-	memcpy(ip6h_send->ip6_ctlun.ip6_dst, ip6h->ip6_ctlun.ip6_dst, sizeof(struct in6_addr));
+	memcpy(&ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_flow, &ip6h->ip6_ctlun.ip6_un1.ip6_un1_flow, sizeof(uint32_t));
+	memcpy(&ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_plen, &ip6h->ip6_ctlun.ip6_un1.ip6_un1_plen, sizeof(uint16_t));
+	memcpy(&ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_nxt, &ip6h->ip6_ctlun.ip6_un1.ip6_un1_nxt, sizeof(uint8_t));
+	memcpy(&ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_hlim, &ip6h->ip6_ctlun.ip6_un1.ip6_un1_hlim, sizeof(uint8_t));
+	memcpy(&ip6h_send->ip6_ctlun.ip6_un2_vfc, &ip6h->ip6_ctlun.ip6_un2_vfc, sizeof(uint8_t));
+	memcpy(&ip6h_send->ip6_src, &ip6h->ip6_ctlun.ip6_un2_vfc, sizeof(uint8_t));
+	memcpy(&ip6h_send->ip6_dst, &ip6h->ip6_src, sizeof(struct in6_addr));
+	memcpy(&ip6h_send->ip6_src, &ip6h->ip6_dst, sizeof(struct in6_addr));
+	inet_pton(AF_INET6, "fe80::b0cc:7ba1:3f07:4b14", &ip6h_send->ip6_src);
+	
+	icmph6_send->icmp6_type = 136; // advestisement neghtbour
+	icmph6_send->icmp6_code = 0; 
+
+	//unsigned char pseudo_packet[72];
+	//pseudo_packet[0] = ip6h_send->ip6_src
+	//u//nsigned short data[] = {0x8800, 0x0000, 0x6000, 0x0000, 0xfe80, 0x0000, 0x0000, 0x0000, 0xb96b, 0x982f, 0x447a, 0x6a80, 0x0201, 0x6057, 0x187d, 0x7fad};
+	icmph6_send->icmp6_cksum = htons(0x6666);
+	//memcpy(eth_send->h_dest, eth->h_source, ETH_ALEN);
+	
+	memcpy(packet, eth_send, sizeof(struct ethhdr));
+	memcpy(packet+sizeof(struct ethhdr), ip6h_send, sizeof(struct ip6_hdr));
+	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr), icmph6_send, sizeof(struct icmp6_hdr));
 	
 	
 	
-	eth->h_dest[0] , eth->h_dest[1] , eth->h_dest[2] , eth->h_dest[3] , eth->h_dest[4] , eth->h_dest[5] );
-    printf("   |-Source Address      : %.2X-%.2X-%.2X-%.2X-%.2X-%.2X \n", eth->h_source[0] , eth->h_source[1] , eth->h_source[2] , eth->h_source[3] , eth->h_source[4] , eth->h_source[5] );
-    printf("   |-Protocol            : %u \n",(unsigned short)eth->h_proto);
-	  printf("   |-Version,class,flow: %u\n", (unsigned int)(ip6h->ip6_ctlun.ip6_un1.ip6_un1_flow));
-    printf("   |-Payload length    : %u\n",(unsigned int)(ip6h->ip6_ctlun.ip6_un1.ip6_un1_plen));
-    printf("   |-Next header       : %u\n", (unsigned int)(ip6h->ip6_ctlun.ip6_un1.ip6_un1_nxt));
-    printf("   |-Hop limit         : %u\n",(unsigned int)ip6h->ip6_ctlun.ip6_un1.ip6_un1_hlim);
+	/*
+38	struct icmp6_hdr
+39	  {
+40	    uint8_t     icmp6_type;   /* type fiel
+41	    uint8_t     icmp6_code;   /* code field 
+42	    uint16_t    icmp6_cksum;  /* checksum field 
+43	    union
+44	      {
+45	        uint32_t  icmp6_un_data32[1]; /* type-specific field 
+46	        uint16_t  icmp6_un_data16[2]; /* type-specific field 
+47	        uint8_t   icmp6_un_data8[4];  /* type-specific field 
+48	      } icmp6_dataun;
+49	  };*/
+
+	int dest_port = 2455;
+	struct sockaddr_in6 dest_addr; //set up dest address info
+
+
+	dest_addr.sin6_family = AF_INET6;
+	dest_addr.sin6_port = 0;
+	dest_addr.sin6_scope_id = 0x20;
+	inet_pton (AF_INET6, "fe80::b0cc:7ba1:3f07:4b14",  &dest_addr.sin6_addr);
+	int bytes;
 	
-	
-	
-	
-	
-	if (sendto (socket_desc, packet, iph->tot_len ,  0, (struct sockaddr *) &sin, sizeof (sin)) < 0)
+
+printf("\n");
+int i;
+
+for (i = 0 & ~15; i < 88; i++)
+{
+    if  ((i & 15) == 0) 
+       printf("%04x ",i);
+    printf((i<0)?"   ":"%02x%c",(unsigned char)packet[i],((i+1)&15)?' ':'\n');
+}
+if ((i & 15) != 0)
+    printf("\n");
+		
+			
+	if ((bytes = sendto(de, packet, 88, 0, (const struct sockaddr*)&sadr_ll,sizeof(struct sockaddr_ll))) < 0)
     {
 		service_error("sendto failed");
     }
+		 printf("%d\n", bytes);
+		    exit(1);
 	
+	if (bytes = sendto(socket_desc, packet, 40+32, 0, (const struct sockaddr*)&sadr_ll,sizeof(struct sockaddr_ll)) < 0)
+    {
+		service_error("sendto failed");
+    }
+   
+
 }
+
+uint16_t
+checksum (void * buffer, int bytes) {
+   uint32_t   total;
+   uint16_t * ptr;
+   int        words;
+
+   total = 0;
+   ptr   = (uint16_t *) buffer;
+   words = (bytes + 1) / 2; // +1 & truncation on / handles any odd byte at end
+
+   /*
+    *   As we're using a 32 bit int to calculate 16 bit checksum
+    *   we can accumulate carries in top half of DWORD and fold them in later
+    */
+   while (words--) total += *ptr++;
+
+   /*
+    *   Fold in any carries
+    *   - the addition may cause another carry so we loop
+    */
+   while (total & 0xffff0000) total = (total >> 16) + (total & 0xffff);
+
+   return (uint16_t) total;
+}
+
 
 void print_ethernet_header(unsigned char* buffer, int size)
 {
@@ -176,7 +302,7 @@ void print_ethernet_header(unsigned char* buffer, int size)
     printf("Ethernet Header\n");
     printf("   |-Destination Address : %.2X-%.2X-%.2X-%.2X-%.2X-%.2X \n", eth->h_dest[0] , eth->h_dest[1] , eth->h_dest[2] , eth->h_dest[3] , eth->h_dest[4] , eth->h_dest[5] );
     printf("   |-Source Address      : %.2X-%.2X-%.2X-%.2X-%.2X-%.2X \n", eth->h_source[0] , eth->h_source[1] , eth->h_source[2] , eth->h_source[3] , eth->h_source[4] , eth->h_source[5] );
-    printf("   |-Protocol            : %u \n",(unsigned short)eth->h_proto);
+    printf("   |-Protocol            : 0x%x \n", htons(eth->h_proto));
 }
 
 void print_ip6_header(unsigned char* buffer, int size)
@@ -197,11 +323,11 @@ void print_ip6_header(unsigned char* buffer, int size)
 
     printf("\n");
 
-//user-fiendly ipv6 address
+	//user-fiendly ipv6 address
 	char source[INET6_ADDRSTRLEN];
 	char destination[INET6_ADDRSTRLEN];
-	inet_ntop(AF_INET6,&ip6_src,source,sizeof(source));
-	inet_ntop(AF_INET6,&ip6_dst,destination,sizeof(destination));
+	inet_ntop(AF_INET6, &ip6_src, source, sizeof(source));
+	inet_ntop(AF_INET6, &ip6_dst, destination, sizeof(destination));
 	
 	
     printf("IPv6 Header\n");
@@ -243,7 +369,7 @@ void print_icmp6_packet(unsigned char* buffer , int size)
     }*/
      
     printf("   |-Code : %d\n",(unsigned int)(icmph6->icmp6_code));
-    printf("   |-Checksum : %d\n",ntohs(icmph6->icmp6_cksum));
+    printf("   |-Checksum : 0x%x\n",ntohs(icmph6->icmp6_cksum));
     //fprintf(logfile , "   |-ID       : %d\n",ntohs(icmph->id));
     //fprintf(logfile , "   |-Sequence : %d\n",ntohs(icmph->sequence));
     printf("\n");
