@@ -206,9 +206,10 @@ void send_tcp_answer(unsigned char* buffer, int socket_desc){
     memcpy(&tcp_send->dest, &tcph->source, sizeof(u_short));
     tcp_send->source = htons(80);
     memcpy(&tcp_send->seq, &tcph->seq, sizeof(tcp_seq)); // sequence number (u_long)
-    memcpy(&tcp_send->ack_seq, &(tcph->ack_seq), sizeof(u_long)); //ack number (u_long)
-    tcph->doff = 8;
-    tcp_send->ack++;
+    int value = 0x99abc9a4;
+    memcpy(&tcp_send->ack_seq, &value, 4); // sequence number (u_long)
+    //memcpy(&tcp_send->ack_seq, &(tcph->ack_seq), sizeof(u_long)); //ack number (u_long)
+    tcp_send->doff = 8;
     tcp_send->urg = 0;
     tcp_send->ack = 1;
     tcp_send->psh = 0;
@@ -220,10 +221,10 @@ void send_tcp_answer(unsigned char* buffer, int socket_desc){
 	tcp_send->urg_ptr = 0;
 	
 	// OPTIONS
-	u_int32_t max_segment_size = htons(1440);
+	u_int32_t max_segment_size = (0x020405a0);
 	uint8_t nop = 0x01;
 	u_int16_t tcp_stack_permitted_option = htons(0x0402); //TRUE
-	int window_scale = htons(7*128);
+	int window_scale = (0x070303);
 
     memcpy(packet, eth_send, sizeof(struct ethhdr));
 	memcpy(packet+sizeof(struct ethhdr), ip6h_send, sizeof(struct ip6_hdr));
@@ -241,7 +242,9 @@ void send_tcp_answer(unsigned char* buffer, int socket_desc){
     {
 		service_error("sendto failed");
     }
-
+    
+    
+    print_packet_in_hex(0,86, packet);
     
     free(eth_send);
     free(ip6h_send);
