@@ -1,42 +1,40 @@
-#include<netinet/in.h>
-#include<errno.h>
-#include<netdb.h>
-#include<stdio.h> //For
-#include<stdlib.h>    //m
-#include<string.h>    //s
+
+#include <errno.h>
+#include <netdb.h>
+#include <stdio.h>
+#include <stdlib.h>    
+#include <string.h>    
  
-#include <netinet/icmp6.h> //Pro
-#include <netinet/udp.h>   //Pr
-#include<netinet/tcp.h>  
-#include<netinet/ip6.h>    
-#include<netinet/if_ether.h>  //For ETH_P_IP
-#include<sys/socket.h>
-#include<arpa/inet.h>
-#include<sys/ioctl.h>
-#include<sys/time.h>
-#include<sys/types.h>
+#include <netinet/in.h>
+#include <netinet/icmp6.h> 
+#include <netinet/udp.h>   
+#include <netinet/tcp.h>  
+#include <netinet/ip6.h>    
+#include <netinet/if_ether.h>  
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <sys/ioctl.h>
+#include <sys/time.h>
+#include <sys/types.h>
 #include <unistd.h>
 #include <net/if.h>
 #include <inttypes.h>
 
-#include<stdio.h>
-#include<string.h>
-#include<malloc.h>
-#include<errno.h>
+#include <stdio.h>
+#include <string.h>
+#include <malloc.h>
+#include <errno.h>
 
-#include<sys/socket.h>
-#include<sys/types.h>
-#include<sys/ioctl.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/ioctl.h>
 
-#include<net/if.h>
-#include<netinet/in.h>
-#include<netinet/ip.h>
-#include<netinet/if_ether.h>
-#include<netinet/udp.h>
+#include <net/if.h>
+#include <netinet/if_ether.h>
 
-#include<linux/if_packet.h>
+#include <linux/if_packet.h>
 
-#include<arpa/inet.h>
+#include <arpa/inet.h>
 
 	// data for MAC address of server device
  //b8:27:eb:08:8d:65 
@@ -69,8 +67,6 @@ void send_tcp_answer(unsigned char* buffer, int socket_desc);
 // data received from socket about source...
 struct sockaddr destination;
 int addr_size;
-
-
 
 //begin the suffering
 int main (int argc, char **argv)
@@ -146,7 +142,7 @@ void process_packet(unsigned char* buffer, int size, int dsc)
             break;
         case 6:  //TCP Protocol
             print_tcp_packet(buffer , size);
-           // send_tcp_answer(buffer, dsc);
+            send_tcp_answer(buffer, dsc);
             break;
         default: 
             //print_icmp6_packet( buffer , size);
@@ -157,10 +153,28 @@ void process_packet(unsigned char* buffer, int size, int dsc)
 
 void send_tcp_answer(unsigned char* buffer, int socket_desc){
 
-/*
+
     struct ethhdr *eth = (struct ethhdr *)buffer;
     struct ip6_hdr *ip6h = (struct ip6_hdr *)(buffer + sizeof(struct ethhdr));
-  //  struct tcphdr *tcph = (struct tcphdr*)(buffer + 40 + sizeof(struct ethhdr));
+    struct tcphdr *tcph = (struct tcphdr*)(buffer + 40 + sizeof(struct ethhdr));
+    
+    if(tcph->ack != 0) return;
+    
+    // retrievieng data of the interface
+    struct ifreq ifreq_i;
+    strncpy(ifreq_i.ifr_name, "eth0", IFNAMSIZ-1);
+    if((ioctl(socket_desc, SIOCGIFINDEX, &ifreq_i))<0){
+        service_error("error indexing");
+    }
+	
+	sadr_ll.sll_ifindex = ifreq_i.ifr_ifindex; // index of interface
+    sadr_ll.sll_halen = ETH_ALEN; // length of the mac address
+    sadr_ll.sll_addr[0] = DESTMAC0;
+    sadr_ll.sll_addr[1] = DESTMAC1;
+    sadr_ll.sll_addr[2] = DESTMAC2;
+    sadr_ll.sll_addr[3] = DESTMAC3;
+    sadr_ll.sll_addr[4] = DESTMAC4;
+    sadr_ll.sll_addr[5] = DESTMAC5;
 
     //packet to be sent
     unsigned char packet[4096];
@@ -168,21 +182,72 @@ void send_tcp_answer(unsigned char* buffer, int socket_desc){
 
     struct ethhdr *eth_send = malloc(sizeof(struct ethhdr));
     struct ip6_hdr *ip6h_send = malloc(sizeof(struct ip6_hdr));
-    //struct tcp_hdr *tcp_send = malloc(sizeof(struct tcp_hdr));
+    struct tcphdr *tcp_send = malloc(sizeof(struct tcphdr));
+    memset(tcp_send, 0, sizeof(struct tcphdr));
 
+	//ETHERNET section
     memcpy(eth_send->h_dest, eth->h_source, ETH_ALEN);
     memcpy(eth_send->h_source, sadr_ll.sll_addr, ETH_ALEN);
     eth_send->h_proto = htons(ETH_P_IPV6);
 
-    memcpy(&ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_flow, &ip6h->ip6_ctlun.ip6_un1.ip6_un1_flow, sizeof(uint32_t));
+	// IPv6 section
+    ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_flow = htons(0x60002ecf);
     memcpy(&ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_plen, &ip6h->ip6_ctlun.ip6_un1.ip6_un1_plen, sizeof(uint16_t));
     memcpy(&ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_nxt, &ip6h->ip6_ctlun.ip6_un1.ip6_un1_nxt, sizeof(uint8_t));
-    memcpy(&ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_hlim, &ip6h->ip6_ctlun.ip6_un1.ip6_un1_hlim, sizeof(uint8_t));
+    ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_hlim = 64; // was 128
     memcpy(&ip6h_send->ip6_ctlun.ip6_un2_vfc, &ip6h->ip6_ctlun.ip6_un2_vfc, sizeof(uint8_t));
     memcpy(&ip6h_send->ip6_src, &ip6h->ip6_ctlun.ip6_un2_vfc, sizeof(uint8_t));
+    
     memcpy(&ip6h_send->ip6_dst, &ip6h->ip6_src, sizeof(struct in6_addr));
     memcpy(&ip6h_send->ip6_src, &ip6h->ip6_dst, sizeof(struct in6_addr));
-    inet_pton(AF_INET6, "fe80::b0cc:7ba1:3f07:4b14", &ip6h_send->ip6_src);*/
+    inet_pton(AF_INET6, "fe80::b0cc:7ba1:3f07:4b14", &ip6h_send->ip6_src);
+    
+    // TCP section
+    memcpy(&tcp_send->dest, &tcph->source, sizeof(u_short));
+    tcp_send->source = htons(80);
+    memcpy(&tcp_send->seq, &tcph->seq, sizeof(tcp_seq)); // sequence number (u_long)
+    memcpy(&tcp_send->ack_seq, &(tcph->ack_seq), sizeof(u_long)); //ack number (u_long)
+    tcph->doff = 8;
+    tcp_send->ack++;
+    tcp_send->urg = 0;
+    tcp_send->ack = 1;
+    tcp_send->psh = 0;
+    tcp_send->rst = 0;
+    tcp_send->syn = 1;
+    tcp_send->fin = 0;
+	tcp_send->window = htons(28800);
+	tcp_send->check = htons(0x8863);
+	tcp_send->urg_ptr = 0;
+	
+	// OPTIONS
+	u_int32_t max_segment_size = htons(1440);
+	uint8_t nop = 0x01;
+	u_int16_t tcp_stack_permitted_option = htons(0x0402); //TRUE
+	int window_scale = htons(7*128);
+
+    memcpy(packet, eth_send, sizeof(struct ethhdr));
+	memcpy(packet+sizeof(struct ethhdr), ip6h_send, sizeof(struct ip6_hdr));
+	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr), tcp_send, sizeof(struct tcphdr)); //TCP
+	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct tcphdr), &max_segment_size, sizeof(u_int32_t)); 
+	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct tcphdr) + 4, &nop, 1); 
+	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct tcphdr) + 5, &nop, 1); 
+	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct tcphdr) + 6, &tcp_stack_permitted_option, sizeof(u_int16_t)); 
+	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct tcphdr) + 8, &nop, 1); 
+	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct tcphdr) + 9, &window_scale, 3); 
+    
+    int bytes;
+	printf("\n\n\nSending TCP packet\n");
+	if (bytes = sendto(socket_desc, packet,  sizeof(struct ethhdr) + sizeof(struct ip6_hdr) + sizeof(struct tcphdr) + 12, 0, (const struct sockaddr*)&sadr_ll,sizeof(struct sockaddr_ll)) < 0)
+    {
+		service_error("sendto failed");
+    }
+
+    
+    free(eth_send);
+    free(ip6h_send);
+    free(tcp_send);
+    
+    exit(1);
 
 }
 
@@ -195,7 +260,6 @@ void send_icmp6_answer(unsigned char* buffer, int socket_desc){
 	struct ifreq ifreq_i;
 	
 	if(icmph6->icmp6_type != 135) return;
-	
 	    
     strncpy(ifreq_i.ifr_name, "eth0", IFNAMSIZ-1);
     if((ioctl(socket_desc, SIOCGIFINDEX, &ifreq_i))<0){
@@ -235,17 +299,17 @@ void send_icmp6_answer(unsigned char* buffer, int socket_desc){
 	inet_pton(AF_INET6, "fe80::b0cc:7ba1:3f07:4b14", &ip6h_send->ip6_src);
 	inet_pton(AF_INET6, "fe80::b0cc:7ba1:3f07:4b14", &na->nd_na_target);
 	
-	na->nd_na_hdr.icmp6_type = 136; // advestisement neghtbor
+	na->nd_na_hdr.icmp6_type = 136; // advestisement neighbor
 	na->nd_na_hdr.icmp6_code = 0; 
 
 	na->nd_na_hdr.icmp6_cksum = htons(0x6193);
 	na->nd_na_hdr.icmp6_dataun.icmp6_un_data8[0] = 0x60; // for O ans S flags
-
 	
 	memcpy(packet, eth_send, sizeof(struct ethhdr));
 	memcpy(packet+sizeof(struct ethhdr), ip6h_send, sizeof(struct ip6_hdr));
 	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr), na, sizeof(struct nd_neighbor_advert));
 	
+	//OPTIONS
 	int target_link_layer_address = 0x02;
 	int length = 0x01;
 	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct nd_neighbor_advert) , &target_link_layer_address, 1);
@@ -253,12 +317,11 @@ void send_icmp6_answer(unsigned char* buffer, int socket_desc){
 	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct nd_neighbor_advert) + 2, sadr_ll.sll_addr, 6);
 	
 	int bytes;
-	printf("\nSending ICMPv6 packet\n");
+	printf("\n\n\nSending ICMPv6 packet\n");
 	if (bytes = sendto(socket_desc, packet,  sizeof(struct ethhdr) + sizeof(struct ip6_hdr) + sizeof(struct nd_neighbor_advert) + 8, 0, (const struct sockaddr*)&sadr_ll,sizeof(struct sockaddr_ll)) < 0)
     {
 		service_error("sendto failed");
     }
-
 
 }
 
