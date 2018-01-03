@@ -46,7 +46,7 @@
  #define DESTMAC3	0x08
  #define DESTMAC4	0x8d
  #define DESTMAC5	0x65
- struct sockaddr_ll sadr_ll;
+struct sockaddr_ll sadr_ll;
 
 // data from IPv6
 struct in6_addr ip6_src;	/* source address */
@@ -63,19 +63,19 @@ int create_socket();
 void send_icmp6_answer(unsigned char* buffer, int socket_desc);
 uint16_t checksum (void * buffer, int bytes);
 void print_packet_in_hex(int start, int end, char* packet);
+void send_tcp_answer(unsigned char* buffer, int socket_desc);
+
 
 // data received from socket about source...
 struct sockaddr destination;
 int addr_size;
 
-struct ifreq ifreq_i;
+
 
 //begin the suffering
 int main (int argc, char **argv)
 {
 	printf("Starting server\n");
-	
-	printf("%d\n", sizeof(struct icmp6_hdr));
 
 	int socket_desc_rcv = create_socket();
 	int socket_desc_send = create_socket();
@@ -93,11 +93,9 @@ int main (int argc, char **argv)
 		if ((bytes = recvfrom (socket_desc_rcv, (void*)buffer, 1000, 0, &destination, &addr_size)) < 0)  {
 			service_error("recvfrom() failed ");
 		}else{
-
-			printf("%x", buffer);
 			process_packet(buffer, bytes, socket_desc_send);
-		
 		}
+
 	}
 	
 	free(buffer);
@@ -130,20 +128,7 @@ int create_socket(){
 		service_error("Error binding");
 	}
 
-    strncpy(ifreq_i.ifr_name, "eth0", IFNAMSIZ-1);
-    if((ioctl(socket_desc, SIOCGIFINDEX, &ifreq_i))<0){
-        service_error("error indexing");
-    }
-
-    sadr_ll.sll_ifindex = ifreq_i.ifr_ifindex; // index of interface
-    sadr_ll.sll_halen = ETH_ALEN; // length of destination mac address
-    sadr_ll.sll_addr[0] = DESTMAC0;
-    sadr_ll.sll_addr[1] = DESTMAC1;
-    sadr_ll.sll_addr[2] = DESTMAC2;
-    sadr_ll.sll_addr[3] = DESTMAC3;
-    sadr_ll.sll_addr[4] = DESTMAC4;
-    sadr_ll.sll_addr[5] = DESTMAC5;
-	
+ 
 	return socket_desc;
 	
 }
@@ -161,7 +146,7 @@ void process_packet(unsigned char* buffer, int size, int dsc)
             break;
         case 6:  //TCP Protocol
             print_tcp_packet(buffer , size);
-            send_tcp_answer(buffer, socket_desc);
+           // send_tcp_answer(buffer, dsc);
             break;
         default: 
             //print_icmp6_packet( buffer , size);
@@ -172,9 +157,10 @@ void process_packet(unsigned char* buffer, int size, int dsc)
 
 void send_tcp_answer(unsigned char* buffer, int socket_desc){
 
+/*
     struct ethhdr *eth = (struct ethhdr *)buffer;
     struct ip6_hdr *ip6h = (struct ip6_hdr *)(buffer + sizeof(struct ethhdr));
-    struct tcphdr *tcph = (struct tcphdr*)(buffer + 40 + sizeof(struct ethhdr));
+  //  struct tcphdr *tcph = (struct tcphdr*)(buffer + 40 + sizeof(struct ethhdr));
 
     //packet to be sent
     unsigned char packet[4096];
@@ -182,7 +168,7 @@ void send_tcp_answer(unsigned char* buffer, int socket_desc){
 
     struct ethhdr *eth_send = malloc(sizeof(struct ethhdr));
     struct ip6_hdr *ip6h_send = malloc(sizeof(struct ip6_hdr));
-    struct tcp_hdr *na = malloc(sizeof(struct nd_neighbor_advert));
+    //struct tcp_hdr *tcp_send = malloc(sizeof(struct tcp_hdr));
 
     memcpy(eth_send->h_dest, eth->h_source, ETH_ALEN);
     memcpy(eth_send->h_source, sadr_ll.sll_addr, ETH_ALEN);
@@ -196,7 +182,7 @@ void send_tcp_answer(unsigned char* buffer, int socket_desc){
     memcpy(&ip6h_send->ip6_src, &ip6h->ip6_ctlun.ip6_un2_vfc, sizeof(uint8_t));
     memcpy(&ip6h_send->ip6_dst, &ip6h->ip6_src, sizeof(struct in6_addr));
     memcpy(&ip6h_send->ip6_src, &ip6h->ip6_dst, sizeof(struct in6_addr));
-    inet_pton(AF_INET6, "fe80::b0cc:7ba1:3f07:4b14", &ip6h_send->ip6_src);
+    inet_pton(AF_INET6, "fe80::b0cc:7ba1:3f07:4b14", &ip6h_send->ip6_src);*/
 
 }
 
@@ -205,6 +191,25 @@ void send_icmp6_answer(unsigned char* buffer, int socket_desc){
 	struct ethhdr *eth = (struct ethhdr *)buffer;
 	struct ip6_hdr *ip6h = (struct ip6_hdr *)(buffer + sizeof(struct ethhdr));
 	struct icmp6_hdr *icmph6 = (struct icmp6_hdr *)(buffer + 40 + sizeof(struct ethhdr));
+	
+	struct ifreq ifreq_i;
+	
+	if(icmph6->icmp6_type != 135) return;
+	
+	    
+    strncpy(ifreq_i.ifr_name, "eth0", IFNAMSIZ-1);
+    if((ioctl(socket_desc, SIOCGIFINDEX, &ifreq_i))<0){
+        service_error("error indexing");
+    }
+	
+	sadr_ll.sll_ifindex = ifreq_i.ifr_ifindex; // index of interface
+    sadr_ll.sll_halen = ETH_ALEN; // length of destination mac address
+    sadr_ll.sll_addr[0] = DESTMAC0;
+    sadr_ll.sll_addr[1] = DESTMAC1;
+    sadr_ll.sll_addr[2] = DESTMAC2;
+    sadr_ll.sll_addr[3] = DESTMAC3;
+    sadr_ll.sll_addr[4] = DESTMAC4;
+    sadr_ll.sll_addr[5] = DESTMAC5;
 
 	//packet to be sent
 	unsigned char packet[4096];
@@ -233,8 +238,8 @@ void send_icmp6_answer(unsigned char* buffer, int socket_desc){
 	na->nd_na_hdr.icmp6_type = 136; // advestisement neghtbor
 	na->nd_na_hdr.icmp6_code = 0; 
 
-	na->nd_na_hdr.icmp6_cksum = htons(0xf432);
-	na->nd_na_hdr.icmp6_dataun.icmp6_un_data8[0] = 0x06; // for O ans S flags
+	na->nd_na_hdr.icmp6_cksum = htons(0x6193);
+	na->nd_na_hdr.icmp6_dataun.icmp6_un_data8[0] = 0x60; // for O ans S flags
 
 	
 	memcpy(packet, eth_send, sizeof(struct ethhdr));
@@ -248,14 +253,12 @@ void send_icmp6_answer(unsigned char* buffer, int socket_desc){
 	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct nd_neighbor_advert) + 2, sadr_ll.sll_addr, 6);
 	
 	int bytes;
-	
+	printf("\nSending ICMPv6 packet\n");
 	if (bytes = sendto(socket_desc, packet,  sizeof(struct ethhdr) + sizeof(struct ip6_hdr) + sizeof(struct nd_neighbor_advert) + 8, 0, (const struct sockaddr*)&sadr_ll,sizeof(struct sockaddr_ll)) < 0)
     {
 		service_error("sendto failed");
     }
-   
-   	 printf("%d\n", bytes);
-		    exit(1);
+
 
 }
 
