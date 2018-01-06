@@ -59,9 +59,17 @@ void print_icmp6_packet(unsigned char* buffer , int size);
 void print_tcp_packet(unsigned char* buffer , int size);
 int create_socket();
 void send_icmp6_answer(unsigned char* buffer, int socket_desc);
-uint16_t checksum (void * buffer, int bytes);
+
+uint16_t
+checksum (uint16_t *addr, int len);
 void print_packet_in_hex(int start, int end, char* packet);
 void send_tcp_answer(unsigned char* buffer, int socket_desc);
+
+//buff holds either data or options (or both)
+int calculate_tcp_checksum(struct ip6_hdr *ip6h_send ,struct tcphdr *tcp_send , char *options, int buffsize);
+
+uint16_t
+tcp6_checksum (struct ip6_hdr iphdr, struct tcphdr tcphdr,char *options);
 
 
 // data received from socket about source...
@@ -113,21 +121,17 @@ int create_socket(){
 	// create raw socket for basic packets and sniffing ethernet packets
 	if (((socket_desc = socket (AF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) < 0)) 
 		service_error("Error receiving listening socket desc: ");
-		
+	
 	// binding socket to interface eth0
 	memset(&ifr, 0, sizeof(struct ifreq));
 	snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "eth0");
 	ioctl(socket_desc, SIOCGIFINDEX, &ifr);
-
-	char *devname = "eth0";
-	if(setsockopt(socket_desc, SOL_SOCKET, SO_BINDTODEVICE,  devname, 4)<0){
-		service_error("Error binding");
-	}
-
  
 	return socket_desc;
 	
 }
+
+	
 
 void process_packet(unsigned char* buffer, int size, int dsc)
 {
@@ -205,9 +209,16 @@ void send_tcp_answer(unsigned char* buffer, int socket_desc){
     // TCP section
     memcpy(&tcp_send->dest, &tcph->source, sizeof(u_short));
     tcp_send->source = htons(80);
-    memcpy(&tcp_send->seq, &tcph->seq, sizeof(tcp_seq)); // sequence number (u_long)
+    memcpy(&tcp_send->ack_seq, &tcph->seq, sizeof(tcp_seq)); // sequence number (u_long)
+    uint32_t ack_seq_inv = ntohl(tcp_send->ack_seq);
+    ack_seq_inv++;
+    uint32_t ack_seq_inv2 = htonl(ack_seq_inv);
+    memcpy(&tcp_send->ack_seq, &ack_seq_inv2, sizeof(uint32_t)); 
+
+    //sequence number
     int value = 0x99abc9a4;
-    memcpy(&tcp_send->ack_seq, &value, 4); // sequence number (u_long)
+    memcpy(&tcp_send->seq, &value, 4); // sequence number (u_long)
+    
     //memcpy(&tcp_send->ack_seq, &(tcph->ack_seq), sizeof(u_long)); //ack number (u_long)
     tcp_send->doff = 8;
     tcp_send->urg = 0;
@@ -217,41 +228,75 @@ void send_tcp_answer(unsigned char* buffer, int socket_desc){
     tcp_send->syn = 1;
     tcp_send->fin = 0;
 	tcp_send->window = htons(28800);
-	tcp_send->check = htons(0x8863);
+	tcp_send->check = 0;
 	tcp_send->urg_ptr = 0;
 	
 	// OPTIONS
-	u_int32_t max_segment_size = (0x020405a0);
-	uint8_t nop = 0x01;
-	u_int16_t tcp_stack_permitted_option = htons(0x0402); //TRUE
+	char options[12];
+	int max_segment_size = htonl(0x020405a0);
+	int nop = 0x01;
+	int tcp_stack_permitted_option = htons(0x0402); //TRUE
 	int window_scale = (0x070303);
-
+	memcpy(options,&max_segment_size, sizeof(u_int32_t)); 
+	memcpy(options + 4, &nop, 1); 
+	memcpy(options + 5, &nop, 1); 
+	memcpy(options + 6, &tcp_stack_permitted_option, sizeof(u_int16_t)); 
+	memcpy(options + 8, &nop, 1); 
+	memcpy(options + 9, &window_scale, 3); 
+	
+	tcp_send->check = calculate_tcp_checksum( ip6h_send,tcp_send, options, 12);
+	
     memcpy(packet, eth_send, sizeof(struct ethhdr));
 	memcpy(packet+sizeof(struct ethhdr), ip6h_send, sizeof(struct ip6_hdr));
 	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr), tcp_send, sizeof(struct tcphdr)); //TCP
-	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct tcphdr), &max_segment_size, sizeof(u_int32_t)); 
-	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct tcphdr) + 4, &nop, 1); 
-	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct tcphdr) + 5, &nop, 1); 
-	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct tcphdr) + 6, &tcp_stack_permitted_option, sizeof(u_int16_t)); 
-	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct tcphdr) + 8, &nop, 1); 
-	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct tcphdr) + 9, &window_scale, 3); 
-    
+	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct tcphdr), options, sizeof(options)); 
+
     int bytes;
 	printf("\n\n\nSending TCP packet\n");
-	if (bytes = sendto(socket_desc, packet,  sizeof(struct ethhdr) + sizeof(struct ip6_hdr) + sizeof(struct tcphdr) + 12, 0, (const struct sockaddr*)&sadr_ll,sizeof(struct sockaddr_ll)) < 0)
+	if (bytes = sendto(socket_desc, packet,  sizeof(struct ethhdr) + sizeof(struct ip6_hdr) + sizeof(struct tcphdr) + sizeof(options), 0, (const struct sockaddr*)&sadr_ll,sizeof(struct sockaddr_ll)) < 0)
     {
 		service_error("sendto failed");
     }
-    
     
     print_packet_in_hex(0,86, packet);
     
     free(eth_send);
     free(ip6h_send);
     free(tcp_send);
-    
-    exit(1);
 
+}
+
+// version for ipv6 pseudoheader
+struct tcp_phdr{
+	
+		struct in6_addr src_addr;
+		struct in6_addr dst_addr;
+		uint32_t length;
+		uint8_t zero[3]; //reserved according to specification
+		uint8_t protocol;
+		
+};
+
+
+int calculate_tcp_checksum(struct ip6_hdr *ip6h_send ,struct tcphdr *tcp_send , char *options, int buffsize){
+	
+	struct tcp_phdr pseudoheader;
+	memcpy(&pseudoheader.src_addr, &ip6h_send->ip6_src, sizeof(ip6h_send->ip6_src));
+	memcpy(&pseudoheader.dst_addr, &ip6h_send->ip6_dst, sizeof(ip6h_send->ip6_dst));
+	memset(pseudoheader.zero, 0, 3);
+	pseudoheader.protocol = 0x06;
+	pseudoheader.length = htonl(sizeof(struct tcphdr) + buffsize);
+	
+	char buffer[4096];
+	
+	memcpy(buffer, &pseudoheader, sizeof(struct tcp_phdr)); 
+	memcpy(buffer+sizeof(struct tcp_phdr), tcp_send, sizeof(struct tcphdr)); 
+	memcpy(buffer+sizeof(struct tcp_phdr)+ sizeof(struct tcphdr), options, buffsize); 
+	
+	int cksm = checksum((uint16_t*)buffer, sizeof(struct tcp_phdr)+ buffsize+ sizeof(struct tcphdr));
+	
+	return cksm;
+	
 }
 
 void send_icmp6_answer(unsigned char* buffer, int socket_desc){
@@ -328,30 +373,7 @@ void send_icmp6_answer(unsigned char* buffer, int socket_desc){
 
 }
 
-uint16_t
-checksum (void * buffer, int bytes) {
-   uint32_t   total;
-   uint16_t * ptr;
-   int        words;
 
-   total = 0;
-   ptr   = (uint16_t *) buffer;
-   words = (bytes + 1) / 2; // +1 & truncation on / handles any odd byte at end
-
-   /*
-    *   As we're using a 32 bit int to calculate 16 bit checksum
-    *   we can accumulate carries in top half of DWORD and fold them in later
-    */
-   while (words--) total += *ptr++;
-
-   /*
-    *   Fold in any carries
-    *   - the addition may cause another carry so we loop
-    */
-   while (total & 0xffff0000) total = (total >> 16) + (total & 0xffff);
-
-   return (uint16_t) total;
-}
 
 void print_packet_in_hex(int start, int end, char* packet){
 	
