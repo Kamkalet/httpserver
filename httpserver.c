@@ -51,7 +51,7 @@ struct in6_addr ip6_src;	/* source address */
 struct in6_addr ip6_dst;	/* destination address */
 
 // funs
-void send_tcp_ACK(unsigned char* buffer, int socket_desc);
+void send_tcp_ACK(unsigned char* buffer, int socket_desc, int ack_size);
 void service_error(char *message);
 void process_packet(unsigned char* buffer, int size, int dsc);
 void print_ethernet_header(unsigned char* buffer, int size);
@@ -72,6 +72,7 @@ int calculate_tcp_checksum(struct ip6_hdr *ip6h_send ,struct tcphdr *tcp_send , 
 uint16_t
 tcp6_checksum (struct ip6_hdr iphdr, struct tcphdr tcphdr,char *options);
 
+void send_tcp_HTTP(unsigned char* buffer, int socket_desc, int ack_size);
 
 // data received from socket about source...
 struct sockaddr destination;
@@ -132,12 +133,16 @@ int create_socket(){
 	
 }
 
-	
+uint32_t ack_send = 0;
+uint32_t ack_send2 = 0;
 
 void process_packet(unsigned char* buffer, int size, int dsc)
 {
 
     struct ip6_hdr *ip6h = (struct ip6_hdr*)(buffer + sizeof(struct ethhdr));
+    
+    //payload length used to increase ack number later on..
+    uint16_t payload_length;
 
     switch ((unsigned int)ip6h->ip6_ctlun.ip6_un1.ip6_un1_nxt) //Check the Protocol and do accordingly...
     {
@@ -146,7 +151,7 @@ void process_packet(unsigned char* buffer, int size, int dsc)
             send_icmp6_answer(buffer, dsc);
             break;
         case 6:  //TCP Protocol
-            print_tcp_packet(buffer , size);
+			print_tcp_packet(buffer , size);
             
             struct tcphdr *tcph = (struct tcphdr*)(buffer + 40 + sizeof(struct ethhdr));
 
@@ -155,43 +160,199 @@ void process_packet(unsigned char* buffer, int size, int dsc)
             
             // if HTTP Request is received ( must be PUSH flag on, and
             // HTTP port is the source
-            else if(tcph->psh==1 && ntohs(tcph->dest) == 80)
-				send_tcp_ACK(buffer, dsc);
+            else if(tcph->psh==1 && ntohs(tcph->dest) == 80){
+				
+				 struct ip6_hdr *ip6h = (struct ip6_hdr *)(buffer + sizeof(struct ethhdr));
+				
+				 payload_length = ntohs(ip6h->ip6_ctlun.ip6_un1.ip6_un1_plen);
+				 send_tcp_ACK(buffer, dsc, payload_length - sizeof(struct tcphdr));
+				 
+				 char *ack_send_buffer = (unsigned char *) malloc (1000* sizeof (unsigned char));
+				 memset(ack_send_buffer,0, 1000);
+				 int bytes;
+				 if ((bytes = recvfrom (dsc, (void*)ack_send_buffer, 1000, 0, NULL, NULL)) < 0)  {
+			         service_error("recvfrom() failed ");
+		         }else{
+						print_tcp_packet(ack_send_buffer , bytes);
+				 }
+				 
+				 send_tcp_HTTP(buffer, dsc, payload_length - sizeof(struct tcphdr));
+			}
+			/*
+			else if((tcph->ack)==1 && ntohs(tcph->source) == 80){
+				
+				 send_tcp_HTTP(buffer, dsc, payload_length - sizeof(struct tcphdr));
+				 
+			} */
+		
+			else if((tcph->seq)==ack_send && ntohs(tcph->dest) == 80){
+				
+				 struct tcphdr *tcph = (struct tcphdr*)(buffer + 40 + sizeof(struct ethhdr));
+				 ack_send2 = ntohl(tcph->ack_seq);
+				 send_tcp_FIN(buffer, dsc, payload_length - sizeof(struct tcphdr));
+				 exit(1);
+				 
+			}else if((ack_send2+1)==ack_send  && ntohs(tcph->dest) == 80){
+				
+				exit(1);
+				
+			}
+				printf("\n0x%x", tcph->seq);
+			printf("\n0x%x", ack_send);
+			printf("\n%d", ntohs(tcph->dest));
+
             
             break;
         default: 
-            //print_icmp6_packet( buffer , size);
             break;
     }
 
 }
 
-uint16_t checksum (uint16_t *addr, int len)
-{
-  int count = len;
-  register uint32_t sum = 0;
-  uint16_t answer = 0;
-  // Sum up 2-byte values until none or only one byte left.
-  while (count > 1) {
-	sum += *(addr++);
-	count -= 2;
-  }
-  // Add left-over byte, if any.
-  if (count > 0) {
-	sum += *(uint8_t *) addr;
-  }
-  // Fold 32-bit sum into 16 bits; we lose information by doing this,
-  // increasing the chances of a collision.
-  // sum = (lower 16 bits) + (upper 16 bits shifted right 16 bits)
-  while (sum >> 16) {
-	sum = (sum & 0xffff) + (sum >> 16);
-  }
-  // Checksum is one's compliment of sum.
-  answer = ~sum;
-  return (answer);
+
+void send_tcp_HTTP(unsigned char* buffer, int socket_desc, int ack_size){
+
+    struct ethhdr *eth = (struct ethhdr *)buffer;
+    struct ip6_hdr *ip6h = (struct ip6_hdr *)(buffer + sizeof(struct ethhdr));
+    struct tcphdr *tcph = (struct tcphdr*)(buffer + 40 + sizeof(struct ethhdr));
+      
+    // retrievieng data of the interface
+    struct ifreq ifreq_i;
+    strncpy(ifreq_i.ifr_name, "eth0", IFNAMSIZ-1);
+    if((ioctl(socket_desc, SIOCGIFINDEX, &ifreq_i))<0){
+        service_error("error indexing");
+    }
+	
+	sadr_ll.sll_ifindex = ifreq_i.ifr_ifindex; // index of interface
+    sadr_ll.sll_halen = ETH_ALEN; // length of the mac address
+    sadr_ll.sll_addr[0] = DESTMAC0;
+    sadr_ll.sll_addr[1] = DESTMAC1;
+    sadr_ll.sll_addr[2] = DESTMAC2;
+    sadr_ll.sll_addr[3] = DESTMAC3;
+    sadr_ll.sll_addr[4] = DESTMAC4;
+    sadr_ll.sll_addr[5] = DESTMAC5;
+
+    //packet to be sent
+    unsigned char packet[4096];
+    memset (packet, 0, 4096);
+
+    struct ethhdr *eth_send = malloc(sizeof(struct ethhdr));
+    struct ip6_hdr *ip6h_send = malloc(sizeof(struct ip6_hdr));
+    struct tcphdr *tcp_send = malloc(sizeof(struct tcphdr));
+    memset(tcp_send, 0, sizeof(struct tcphdr));
+
+	//ETHERNET section
+    memcpy(eth_send->h_dest, eth->h_source, ETH_ALEN);
+    memcpy(eth_send->h_source, sadr_ll.sll_addr, ETH_ALEN);
+    eth_send->h_proto = htons(ETH_P_IPV6);
+
+	// IPv6 section
+    ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_flow = htonl(0x60002ecf);
+    
+    int payload_length = 503;
+    // THIS CHANGES
+    ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_plen = htons(payload_length);
+    
+    memcpy(&ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_nxt, &ip6h->ip6_ctlun.ip6_un1.ip6_un1_nxt, sizeof(uint8_t));
+    ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_hlim = 64; // was 128
+    memcpy(&ip6h_send->ip6_ctlun.ip6_un2_vfc, &ip6h->ip6_ctlun.ip6_un2_vfc, sizeof(uint8_t));
+    memcpy(&ip6h_send->ip6_src, &ip6h->ip6_ctlun.ip6_un2_vfc, sizeof(uint8_t));
+    
+    memcpy(&ip6h_send->ip6_dst, &ip6h->ip6_src, sizeof(struct in6_addr));
+    memcpy(&ip6h_send->ip6_src, &ip6h->ip6_dst, sizeof(struct in6_addr));
+    inet_pton(AF_INET6, "fe80::b0cc:7ba1:3f07:4b14", &ip6h_send->ip6_src);
+    
+    // TCP section
+    memcpy(&tcp_send->dest, &tcph->source, sizeof(u_short));
+    tcp_send->source = htons(80);
+    
+    //*THIS part changer from the other
+    memcpy(&tcp_send->seq, &tcph->ack_seq, sizeof(tcp_seq)); // sequence number (u_long)
+    
+    // ACK number change
+    uint32_t prev_ack = ntohl(tcph->seq);
+    prev_ack += ack_size;
+    tcp_send->ack_seq = htonl(prev_ack);
+    ack_send = tcp_send->ack_seq;
+    
+    // and THIS FLAG
+    tcp_send->doff = 5;
+    
+    tcp_send->urg = 0;
+    tcp_send->ack = 1;
+    tcp_send->psh = 1;
+    tcp_send->rst = 0;
+    
+    // and THIS
+    tcp_send->syn = 0;
+    tcp_send->fin = 0;
+    
+    //AND THIS
+	tcp_send->window = htons(234);
+	
+	tcp_send->check = 0;
+	tcp_send->urg_ptr = 0;
+	
+	// DATA
+	char httpdata[4096];
+	sprintf(&httpdata, 	"HTTP/1.1 200 OK\r\n"
+						"Date: Tue, 09 Jan 2018 22:45:03 GMT\r\n"
+						"Server: Apache/2.4.25 (Raspbian)\r\n"
+						"Last-Modified: Tue, 09 Jan 2018 22:41:57 GMT\r\n"
+						"ETag: \"b0-5625f9f4f0a6a-gzip\"\r\n"
+						"Accept-Ranges: bytes\r\n"
+						"Vary: Accept-Encoding\r\n"
+						"Content-Encoding: gzip\r\n"
+						"Content-Length: 145\r\n"
+						"Keep-Alive: timeout=5, max=100\r\n"
+						"Connection: Keep-Alive\r\n"
+						"Content-Type: text/html\r\n"
+						"\r\n"
+						/*encoded data below
+						<!DOCTYPE html>
+						<html>
+							<head>
+								<link rel="shortcut icon" type="image/x-icon" href="favicon.ico"/>
+								<title>Lorem Ipsum</title>
+							</head>
+								<body>
+									<h1>Lorem Ipsum</h1>
+								</body>
+						</html>*/
+						"<!DOCTYPE html>\n"
+						"<html>\n"
+							"<head>\n"
+								"<link rel=\"shortcut icon\" type=\"image/x-icon\" href=\"favicon.ico\"/>\n"
+								"<title>Lorem Ipsum</title>\n"
+							"</head>\n"
+								"<body>\n"
+									"<h1>Lorem Ipsum</h1>\n"
+								"</body>\n"
+						"</html>\n")
+						;
+	
+	// AND THIS CHANGES
+	tcp_send->check = calculate_tcp_checksum(ip6h_send, tcp_send, &httpdata, payload_length-20);
+	
+    memcpy(packet, eth_send, sizeof(struct ethhdr));
+	memcpy(packet+sizeof(struct ethhdr), ip6h_send, sizeof(struct ip6_hdr));
+	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr), tcp_send, sizeof(struct tcphdr)); //TCP
+	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr) + sizeof(struct tcphdr), &httpdata,  payload_length - sizeof(struct tcphdr)); //TCP
+
+    int bytes;
+	printf("\n\n\nSending TCP packet\n");
+	if (bytes = sendto(socket_desc, packet,  sizeof(struct ethhdr) + sizeof(struct ip6_hdr) + sizeof(struct tcphdr) +  payload_length - sizeof(struct tcphdr),0 , (const struct sockaddr*)&sadr_ll,sizeof(struct sockaddr_ll)) < 0)
+    {
+		service_error("sendto failed: ");
+    }
+        
+    free(eth_send);
+    free(ip6h_send);
+    free(tcp_send);
+
 }
 
-void send_tcp_ACK(unsigned char* buffer, int socket_desc){
+void send_tcp_FIN(unsigned char* buffer, int socket_desc, int ack_size){
 
     struct ethhdr *eth = (struct ethhdr *)buffer;
     struct ip6_hdr *ip6h = (struct ip6_hdr *)(buffer + sizeof(struct ethhdr));
@@ -246,9 +407,138 @@ void send_tcp_ACK(unsigned char* buffer, int socket_desc){
     memcpy(&tcp_send->dest, &tcph->source, sizeof(u_short));
     tcp_send->source = htons(80);
     
-    //*THIS part changer from the other
+    //*THIS part changer from the other ACK NUMBERS AND SYN 
     memcpy(&tcp_send->seq, &tcph->ack_seq, sizeof(tcp_seq)); // sequence number (u_long)
-    memcpy(&tcp_send->ack_seq, &tcph->seq, sizeof(uint32_t)); 
+    memcpy(&tcp_send->ack_seq, &tcph->seq, sizeof(tcp_seq)); // sequence number (u_long)
+    
+    // and THIS FLAG
+    tcp_send->doff = 5;
+    
+    tcp_send->urg = 0;
+    tcp_send->ack = 1;
+    tcp_send->psh = 0;
+    tcp_send->rst = 0;
+    
+    // and THIS
+    tcp_send->syn = 0;
+    tcp_send->fin = 1;
+    
+    //AND THIS
+	tcp_send->window = htons(234);
+	
+	tcp_send->check = 0;
+	tcp_send->urg_ptr = 0;
+	
+	// NO OPTIONS NOR DATA
+	
+	// AND THIS CHANGES
+	tcp_send->check = calculate_tcp_checksum(ip6h_send, tcp_send, NULL,0);
+	
+    memcpy(packet, eth_send, sizeof(struct ethhdr));
+	memcpy(packet+sizeof(struct ethhdr), ip6h_send, sizeof(struct ip6_hdr));
+	memcpy(packet+sizeof(struct ethhdr)+sizeof(struct ip6_hdr), tcp_send, sizeof(struct tcphdr)); //TCP
+
+    int bytes;
+	printf("\n\n\nSending TCP packet\n");
+	if (bytes = sendto(socket_desc, packet,  sizeof(struct ethhdr) + sizeof(struct ip6_hdr) + sizeof(struct tcphdr) ,0 , (const struct sockaddr*)&sadr_ll,sizeof(struct sockaddr_ll)) < 0)
+    {
+		service_error("sendto failed: ");
+    }
+        
+    free(eth_send);
+    free(ip6h_send);
+    free(tcp_send);
+
+}
+	
+
+uint16_t checksum (uint16_t *addr, int len)
+{
+  int count = len;
+  register uint32_t sum = 0;
+  uint16_t answer = 0;
+  // Sum up 2-byte values until none or only one byte left.
+  while (count > 1) {
+	sum += *(addr++);
+	count -= 2;
+  }
+  // Add left-over byte, if any.
+  if (count > 0) {
+	sum += *(uint8_t *) addr;
+  }
+  // Fold 32-bit sum into 16 bits; we lose information by doing this,
+  // increasing the chances of a collision.
+  // sum = (lower 16 bits) + (upper 16 bits shifted right 16 bits)
+  while (sum >> 16) {
+	sum = (sum & 0xffff) + (sum >> 16);
+  }
+  // Checksum is one's compliment of sum.
+  answer = ~sum;
+  return (answer);
+}
+
+void send_tcp_ACK(unsigned char* buffer, int socket_desc, int ack_size){
+
+    struct ethhdr *eth = (struct ethhdr *)buffer;
+    struct ip6_hdr *ip6h = (struct ip6_hdr *)(buffer + sizeof(struct ethhdr));
+    struct tcphdr *tcph = (struct tcphdr*)(buffer + 40 + sizeof(struct ethhdr));
+      
+    // retrievieng data of the interface
+    struct ifreq ifreq_i;
+    strncpy(ifreq_i.ifr_name, "eth0", IFNAMSIZ-1);
+    if((ioctl(socket_desc, SIOCGIFINDEX, &ifreq_i))<0){
+        service_error("error indexing");
+    }
+	
+	sadr_ll.sll_ifindex = ifreq_i.ifr_ifindex; // index of interface
+    sadr_ll.sll_halen = ETH_ALEN; // length of the mac address
+    sadr_ll.sll_addr[0] = DESTMAC0;
+    sadr_ll.sll_addr[1] = DESTMAC1;
+    sadr_ll.sll_addr[2] = DESTMAC2;
+    sadr_ll.sll_addr[3] = DESTMAC3;
+    sadr_ll.sll_addr[4] = DESTMAC4;
+    sadr_ll.sll_addr[5] = DESTMAC5;
+
+    //packet to be sent
+    unsigned char packet[4096];
+    memset (packet, 0, 4096);
+
+    struct ethhdr *eth_send = malloc(sizeof(struct ethhdr));
+    struct ip6_hdr *ip6h_send = malloc(sizeof(struct ip6_hdr));
+    struct tcphdr *tcp_send = malloc(sizeof(struct tcphdr));
+    memset(tcp_send, 0, sizeof(struct tcphdr));
+
+	//ETHERNET section
+    memcpy(eth_send->h_dest, eth->h_source, ETH_ALEN);
+    memcpy(eth_send->h_source, sadr_ll.sll_addr, ETH_ALEN);
+    eth_send->h_proto = htons(ETH_P_IPV6);
+
+	// IPv6 section
+    ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_flow = htonl(0x60002ecf);
+    
+    // THIS CHANGES
+    ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_plen = htons(20);
+    
+    memcpy(&ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_nxt, &ip6h->ip6_ctlun.ip6_un1.ip6_un1_nxt, sizeof(uint8_t));
+    ip6h_send->ip6_ctlun.ip6_un1.ip6_un1_hlim = 64; // was 128
+    memcpy(&ip6h_send->ip6_ctlun.ip6_un2_vfc, &ip6h->ip6_ctlun.ip6_un2_vfc, sizeof(uint8_t));
+    memcpy(&ip6h_send->ip6_src, &ip6h->ip6_ctlun.ip6_un2_vfc, sizeof(uint8_t));
+    
+    memcpy(&ip6h_send->ip6_dst, &ip6h->ip6_src, sizeof(struct in6_addr));
+    memcpy(&ip6h_send->ip6_src, &ip6h->ip6_dst, sizeof(struct in6_addr));
+    inet_pton(AF_INET6, "fe80::b0cc:7ba1:3f07:4b14", &ip6h_send->ip6_src);
+    
+    // TCP section
+    memcpy(&tcp_send->dest, &tcph->source, sizeof(u_short));
+    tcp_send->source = htons(80);
+    
+    //*THIS part changer from the other ACK NUMBERS AND SYN 
+    memcpy(&tcp_send->seq, &tcph->ack_seq, sizeof(tcp_seq)); // sequence number (u_long)
+    
+    // ACK number change
+    uint32_t prev_ack = ntohl(tcph->seq);
+    prev_ack += ack_size;
+    tcp_send->ack_seq = htonl(prev_ack);
     
     // and THIS FLAG
     tcp_send->doff = 5;
